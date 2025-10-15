@@ -1,11 +1,11 @@
+# Funktion för spec plottar tar list från compute_spec_for_plot
 plot_spec_db_index <- function(S_db, t, f_hz,
                                title = NULL,
                                show_axes = TRUE,
                                show_legend = TRUE,
                                title_size = NULL) {
-  stopifnot(is.matrix(S_db))
-  n_mel <- nrow(S_db); img_w <- ncol(S_db)
-  stopifnot(length(t) == img_w, length(f_hz) == n_mel)
+  n_mel <- nrow(S_db)
+  img_w <- ncol(S_db)
 
   df <- as.data.frame(t(S_db))
   colnames(df) <- paste0("m", seq_len(n_mel))

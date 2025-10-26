@@ -1,0 +1,1743 @@
+---
+title: "En studie av CNN-modeller på AudioMNIST-datasetet"
+subtitle: "732G57, Grupp 9"
+author: 
+  - "Jonas Danielsson"
+date: '2025-10-15'
+
+# Ändrar utformningen av en sida
+geometry: "top=100pt,bottom=100pt,left=68pt,right=66pt"
+
+output: 
+  pdf_document:
+    fig_caption: yes
+    number_sections: yes
+
+# Lägger till angivelser om LaTeX-paket som ska användas i rapporten
+header-includes:
+  - \usepackage{float}
+  - \usepackage{longtable}
+  - \usepackage{caption}
+  - \usepackage{fancyhdr}
+  - \usepackage{titling}
+  - \usepackage[swedish, english]{babel}
+  - \renewcommand{\headrulewidth}{0pt}
+  
+  # Ändrar ett kommando så att man kan ange flera författare
+  - \renewcommand{\and}{\\}
+  
+  # Lägger till information till titelsidan
+  - \pretitle{\centering\vspace{0cm}{\large Maskininlärning för ljudklassificering \par}\vspace{4cm}\Huge\textbf}
+  - \posttitle{\vspace{1cm}\large\textbf{}\par}
+  - \preauthor{\centering\vspace{4cm}\normalsize}
+  - \postauthor{\par\vspace{4cm}}
+  - \predate{\centering{\normalsize Avdelningen för Statistik och maskininlärning \\ Institutionen för datavetenskap \\ Linköpings universitet \par}}
+  - \postdate{\par\vspace{2cm}}
+  - \raggedbottom
+
+# Lägger till en bibliografi med alla referenser som används i rapporten
+ # bibliography: BIBTeX_AudioMnist.bib
+---
+
+<!-- Väljer språk till svenska för automatiska titlar -->
+\selectlanguage{swedish}
+
+<!-- Byter språket på figur- och tabellbeskrivningar till angivna namn -->
+\captionsetup[table]{name = Tabell}
+\setcounter{table}{0}
+\captionsetup[figure]{name = Figur}
+\setcounter{figure}{0}
+
+<!-- Anger att tabellbeskrivningar hamnar ovanför tabellen -->
+\floatstyle{plaintop}
+\restylefloat{table}
+
+<!-- Anger sidnumreringens position -->
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\pagestyle{fancy}
+
+<!-- Tar bort sidnumrering för förteckningar och titelsidan -->
+\pagenumbering{gobble}
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+<!-- Skapar en innehållsförteckning och anger djupet av rubrikerna som ska visas -->
+\setcounter{tocdepth}{3}
+\tableofcontents
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+<!-- Börjar sidnumreringen på sida 1 efter att alla förteckningar visats -->
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+
+```{r setup, include=FALSE}
+# Set the root directory for knitting if needed.  This is left commented out
+# to avoid hard‑coding a system-specific path.  Uncomment and adjust if you
+# need to override the working directory when knitting.
+ knitr::opts_knit$set(root.dir = "C:/Users/Phrumpels Computer/OneDrive/Documents")
+
+```
+
+
+```{r echo = FALSE, include = FALSE}
+
+
+## Packages, start up
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  library(kableExtra)
+  library(purrr)
+  library(patchwork)
+  library(tfdatasets)
+  library(jsonlite)
+  library(reticulate)
+  library(keras3)
+  library(tensorflow)
+})
+
+# Configure the conda environment and display TensorFlow/Keras versions for
+# reproducibility.  The conda environment name should match your local setup.
+reticulate::use_condaenv("r-keras-gpu", required = TRUE)
+reticulate::py_config()   # prints Python environment information
+
+# Set up TensorBoard callback directory; for monitoring.
+log_dir <- file.path("logs", strftime(Sys.time(), "%Y%m%d-%H%M%S"))
+cb <- callback_tensorboard(log_dir = log_dir, update_freq = "epoch")  # or "batch"
+
+# Import tensorflow and keras modules explicitly so that version information is
+# recorded in the knitted report.
+tf <- reticulate::import("tensorflow", delay_load = FALSE)
+k  <- reticulate::import("keras", delay_load = FALSE)
+cat("TF:", tf$`__version__`, " | Keras:", k$`__version__`, "\n")
+
+
+
+```
+
+
+
+
+
+<!-- Börjar med kapitel 1 -->
+# Inledning
+
+Ljuddata har under de senaste åren blivit ett allt vanligare analysområde inom maskininärning. Med tillgång till stora mängder ljudinspelningar och kraftfulla neurala nätverk finns idag möjlighet att automatiskt klassificera ljud (tal, musik, och naturliga ljud-förekomster) till bra förmåga. Ett vanligt tillvägagångsätt att hantera ljud-data är att omvandla ljud till spektrogram, vilket gör det möjligt att behandla ljud som bilder och därmed använda etablerade metoder inom bildigenkänning, så som faltande nätverk (CNN).
+
+I det här projektet används **ljuddata från AudioMNIST** (Sripaad Srinivasan, 2020), som är ett data-material med en sammling inspelade siffror (0-9), för att undersöka hur bra ett neuralt nätverk kan lära sig att känna igen de talade siffrorna baserat på deras spektrogrambild.Genom att stegvis utforska olika inställningar och arkitekturer utvärderas modellernas prestanda och anpassningsförmåga. 
+
+
+## Bakgrund
+
+Inom maskininlärning är neruala nätverk särskilt effektiva för att modellera komplexa högdimensionella samband. För ljuddata används ofta faltade nätverk (CNN) eftersom de kan upptäcka lokala mönster i tid och frekvens på liknande sätt som i bild-data.
+
+Ett viktigt steg är hur ljudet represnteras. Med ett mel-spektrogram delas ljudet upp i flera frekvensband över tiden. Antalet mel-band och tidsupplösning samt våra etablerade intervall-gränser påverkar direkt hur mycket information nätverket har tillgång till.
+
+Det är dock inte självklart hur mycket information som behövs för att uppnå en god modell. Mycket utav de parametrar man väljer är godtyckliga, därav är det relevant att undersöka hur olika upplösningar på datat och nätverksarkitekturer påverkar resultat.
+
+## Syfte
+
+Syftet med projektet är att undersöka hur väl ett faltat nätverk kan användas för att kategorisera ljuddata, samt hur valet av spektrogramparametrar och modellarkitektur påverkar modellens prestanda. 
+
+Projektet kommer även utforska hur mycket man kan föränklöa datan (t.ex. genom att minska antalet mel-band eller tidssteg) utan att förlora för mycket noggrannhet.
+
+Slutligen uvärderas flera olika CNN-arkitekturer för att identifiera en godtycklig modell.
+
+## Problemformulering (Frågeställning)
+
+Projektet försöker förklara följande frågor:
+
+1. Hur väl kan ett fältat nätverk (CNN) klassificera talade siffror baserat på mel-speltrogram?
+
+2. Hur påverkar olika förbehandlingsparametrar (t.ex. antal mel-band, tidsupplösning) modellens noggrannhet?
+
+3. Hur mycket kan datan föränklas utan att prestandan försämras markant?
+
+4. Hur presterar olika CNN-arkitekturer (djupare, grundare, med normalisering, med strides etc.) jämfört med varandra?
+
+5. Vilken kombination av hyperparametrar ger den mest effektiva modellen givet rimlig beräkningstid? 
+
+
+
+
+
+<!-- __________________________________________________________________________________________________________ -->
+
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+
+# Data
+
+## Källa och innehåll
+
+**AudioMNIST** (källa), är ett öppet dataset från kaggle som består av ljudinspelningar där 60 olika talare uttalar siffrorna 0–9 vid flera tillfällen. Totalt innehåller materialet cirka **30 000** .wav-filer. Inspelningarna är inspelade i kontrolerade sammanhang och har bra ljudkvalite.
+
+Fil-strukturen är som sådan, Data-mapp $\rightarrow$ Talare (01-60) $\rightarrow$ Ljud-filer med **klassetiketter**$\in\{0,1,\dots,9\}$ (500st, 50 per siffra). Data-mappen innehåller även *meta.txt* som ger information om varje person (accent, age, gender).
+
+Varje observation representerar ett enskilt ljudklipp och är märkta med:
+
+* **Siffra(0-9):** Den talade klassen som används som *responsvariabel*.
+
+* **Talare(ID 01-60):** vilken person som spelat in ljudet.
+
+<!-- kod för df och tabeller -->
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+# tf <- tensorflow::tf
+
+## Index files + labels (speaker from folder, digit from filename)
+library(tfdatasets)
+data_dir   <- normalizePath("ML_kurs/Project/Audio_MNIST", winslash = "/")
+
+# list .wav files
+wav_files <- list.files(data_dir, pattern = "\\.(wav|WAV)$", recursive = TRUE, full.names = TRUE)
+stopifnot(length(wav_files) > 0)
+
+get_digit   <- function(p) as.integer(strsplit(basename(p), "_", fixed = TRUE)[[1]][1])
+get_speaker <- function(p) basename(dirname(p))  # "03" from .../03/5_03_12.wav
+
+digits   <- vapply(wav_files, get_digit,   integer(1))
+speakers <- vapply(wav_files, get_speaker, character(1))
+
+df <- data.frame(path = wav_files, y = digits, spk = speakers, stringsAsFactors = FALSE)
+
+# Checks
+# table(df$y)      # expect ~3000 per digit (60 spk * 50 utt)
+# length(unique(df$spk))  # expect 60
+# nrow(df)         # expect ~30000
+
+
+# Meta_df
+meta <- jsonlite::fromJSON(file.path(data_dir, "audioMNIST_meta.txt"))
+meta_df <- do.call(rbind, lapply(names(meta), function(id) {
+  cbind(speaker=id, as.data.frame(meta[[id]], stringsAsFactors=FALSE))
+}))
+meta_df <- meta_df[,c("speaker","age", "gender")]
+colnames(meta_df) <- c("spk","age", "gender")
+rm(meta)
+
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+
+# Se till att basen har en avslutande "/"
+base <- paste0(normalizePath(data_dir, winslash = "/"), "/")
+
+df_display_rel <- df %>%
+  mutate(rel_path = sub(base, "", path, fixed = TRUE)) %>%  # fixed=TRUE = ingen regex
+  select(rel_path, spk, y)
+
+# 1) Lägg till ett beständigt radindex tidigt (innan ev. sort/filter)
+df_ix <- df_display_rel %>%
+  mutate(.row = row_number()) %>%            # bevarar "originalrad"
+  transmute(`#` = as.character(.row),                      # kolumn med radnr
+            Fil = as.character(rel_path),            # eller 'rel_path' om du gjorde den tidigare
+            Talare = as.character(spk),
+            Siffra = as.character(y))
+
+n <- nrow(df_ix)
+
+# 2) Plocka ut 4 första och 2 sista
+head_part <- df_ix %>% slice(1:min(4, n))
+tail_part <- if (n >= 2) df_ix %>% slice((n-1):n) else df_ix %>% slice(n)
+
+# 3) Ellipsrad (visuell markör)
+ellipsis_row <- tibble(
+  `#`     = "…",
+  Fil     = "",
+  Talare  = "",
+  Siffra  = ""
+)
+
+# 4) Sätt ihop (om tillräckligt många rader, annars visa allt)
+tbl <- if (n > 6) bind_rows(head_part, ellipsis_row, tail_part) else df_ix
+
+# 5) Snygg utskrift (utan radnamn)
+kable(tbl, row.names = FALSE,
+      col.names = c("#", "Fil-väg", "Talare", "Siffra"),
+      caption = "Samlad Data-frame med varje observation")
+
+```
+
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+df_display_2 <- data.frame("N Personer" = length(unique(df$spk)) ,
+                           "Ljudfiler per siffra" = unique(table(df$y)),
+                           "Summa ljudfiler" = nrow(df) )
+
+kable(df_display_2, row.names = FALSE,
+      col.names = c("N Personer", "Ljudfiler per siffra", "Summa ljudfiler"),
+      caption = "Detaljer:")
+
+```
+
+\pagebreak
+
+## Databearbetning
+
+Rådata består av ljudfiler i .wav-format. För att kunna använda dessa i ett neuralt nätverk omvandlas varje fil till en bild i form av ett log-mel-spektrogram där:
+
+* **x-axeln** representerar tid
+
+* **y-axeln** representerar frekvens (uppdelade i så kallade mel-band)
+
+* **färgintensitet** anger ljudenergi i decibel (dB)
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+# Konstanter
+SAMPLE_RATE  <- 48000.0
+FRAME_LENGTH <- 1024L
+CLIP_DB      <- 80.0
+
+```
+
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+# Hjälp-funktioner
+hz_to_mel <- function(f) 2595 * log10(1 + f/700)
+mel_to_hz <- function(m) 700 * (10^(m/2595) - 1)
+
+```
+
+```{r echo = FALSE, message=FALSE, warning=FALSE}
+
+# ---- Plot-wrapper med img_w (matchar modellen) ----
+compute_spec_for_plot <- function(file,
+                                  frame_step = 256L,
+                                  n_mel      = 64L,
+                                  fmin       = 80.0,
+                                  fmax       = 8000.0,
+                                  img_w      = 64L) {
+  
+  # Läs WAV via TF (vi antar fast SR = 48 kHz för konsekvens)
+  audio_bin <- tf$io$read_file(as.character(file))
+  dec <- tf$audio$decode_wav(audio_bin, desired_channels = 1L)
+  tf$debugging$assert_equal(dec$sample_rate, tf$cast(SAMPLE_RATE, tf$int32))
+  wav <- tf$squeeze(dec$audio, axis = -1L)
+  
+  # STFT
+  stft <- tf$signal$stft(
+    wav,
+    frame_length = as.integer(FRAME_LENGTH),
+    frame_step   = as.integer(frame_step),
+    fft_length   = as.integer(FRAME_LENGTH),
+    window_fn    = tf$signal$hann_window
+  )
+  mag <- tf$abs(stft)  # [T, F_lin]
+  
+  # Lin -> mel (power)
+  num_spec_bins <- as.integer(FRAME_LENGTH/2 + 1L)
+  mel_w <- tf$signal$linear_to_mel_weight_matrix(
+    num_mel_bins         = as.integer(n_mel),
+    num_spectrogram_bins = num_spec_bins,
+    sample_rate          = SAMPLE_RATE,
+    lower_edge_hertz     = fmin,
+    upper_edge_hertz     = fmax,
+    dtype                = tf$float32
+  )
+  mel_power <- tf$matmul(tf$square(mag), mel_w)  # [T, n_mel]
+  
+  # dB-normalisering per klipp: [-CLIP_DB, 0]
+  ln10 <- tf$math$log(10.0)
+  S_db_tf <- 10.0 * tf$math$log(mel_power + 1e-10) / ln10
+  S_db_tf <- S_db_tf - tf$reduce_max(S_db_tf)      # topp=0 dB
+  S_db_tf <- tf$maximum(S_db_tf, -CLIP_DB)
+  
+  # Skala till [0,1], transponera till [mel, time, 1], resize till [n_mel, img_w]
+  S01 <- (S_db_tf + CLIP_DB) / CLIP_DB             # [-C,0] -> [0,1]
+  img <- tf$expand_dims(S01, axis = -1L)           # [T, n_mel, 1]
+  img <- tf$transpose(img, perm = c(1L, 0L, 2L))   # [n_mel, T, 1]
+  img <- tf$image$resize(img, size = as.integer(c(as.integer(n_mel), as.integer(img_w))))
+  img <- tf$squeeze(img, axis = -1L)               # [n_mel, img_w]
+  
+  # Tillbaka till dB för plotting (samma färgskala som övrigt)
+  S_db_res <- as.array(img) * CLIP_DB - CLIP_DB    # [n_mel, img_w], i dB
+  
+  # Axlar: tid (sek) och mel-centers i Hz
+  # Total längd i sek = (#ramar - 1) * frame_step / SR (ramstarts-approxim.)
+  T_raw <- dim(as.array(mag))[1]
+  total_sec <- if (T_raw > 0) (T_raw - 1) * (frame_step / SAMPLE_RATE) else 0
+  t_sec <- seq(0, total_sec, length.out = img_w)
+  
+  mel_edges   <- seq(hz_to_mel(fmin), hz_to_mel(fmax), length.out = n_mel + 1L)
+  mel_centers <- 0.5 * (mel_edges[-1L] + mel_edges[-length(mel_edges)])
+  f_hz <- mel_to_hz(mel_centers)
+  
+  # Returnera dB-matris som matchar modellens indata-dimensioner + axlar
+  list(S_db = S_db_res,            # [n_mel x img_w], dB i [-CLIP_DB, 0]
+       t    = t_sec,               # längd img_w
+       f    = f_hz)                # längd n_mel
+}
+
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+
+# Funktion för spec plottar tar list från compute_spec_for_plot
+plot_spec_db_index <- function(S_db, t, f_hz,
+                               title = NULL,
+                               show_axes = TRUE,
+                               show_legend = TRUE,
+                               title_size = NULL) {
+  n_mel <- nrow(S_db)
+  img_w <- ncol(S_db)
+
+  df <- as.data.frame(t(S_db))
+  colnames(df) <- paste0("m", seq_len(n_mel))
+  df$Time <- t
+  long <- tidyr::pivot_longer(df, -Time, names_to = "mel", values_to = "dB")
+  long$mel <- as.integer(sub("m", "", long$mel))
+
+  # --- fasta Hz-ticks, men etiketter = TARGET-värdena ---
+  targets <- c(100, 1000, 3000, 8000)
+  # Hittar närmaste pixel till target
+  brks_idx <- sapply(targets, function(h) which.min(abs(f_hz - h))) 
+  brks_idx <- pmax(1L, pmin(n_mel, as.integer(brks_idx)))  # clamp till [1, n_mel]
+  y_breaks <- unique(brks_idx)
+  # etiketter = target-värden, inte f_hz[brks]
+  y_labels <- as.character(targets[match(y_breaks, brks_idx)])
+
+  p <- ggplot2::ggplot(long, ggplot2::aes(x = Time, y = mel, fill = dB)) +
+    ggplot2::geom_raster() +
+    ggplot2::scale_y_continuous(breaks = y_breaks, labels = y_labels) +
+    ggplot2::scale_fill_viridis_c(limits = c(-CLIP_DB, 0),
+                                  breaks = seq(-CLIP_DB, 0, by = 20),
+                                  name   = "dB.FS") +
+    ggplot2::labs(x = if (show_axes) "Tid (s)" else NULL,
+                  y = if (show_axes) "Frekvens (Hz)" else NULL,
+                  title = title) +
+    ggplot2::theme_minimal()
+
+  if (!show_axes) {
+    p <- p + ggplot2::theme(
+      axis.title = ggplot2::element_blank(),
+      axis.text  = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank()
+    )
+  }
+  if (!show_legend) p <- p + ggplot2::theme(legend.position = "none")
+  if (!is.null(title_size)) p <- p + ggplot2::theme(plot.title = ggplot2::element_text(size = title_size))
+  p
+}
+
+# Exempel:
+# viz <- compute_spec_for_plot(df$path[1], n_mel=64L, img_w=64L)
+# plot_spec_db_index(viz$S_db, viz$t, viz$f, title = "Log-mel (64x64), dB")
+
+
+```
+
+
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE , fig.width = 6.5, fig.height = 4.8, fig.align = 'center', fig.cap=" Exempel på spektrogram [64,64,1], genererade med TensorFlow i R. (a) Ljudfil → spectrogram. (b) Log–mel spectrogram per siffra(0-9)."}
+
+
+
+# ---- Paket ----
+library(dplyr)
+library(purrr)
+library(patchwork)
+
+# ---- Frys parametrar för “Data”-figuren (finaste upplösning) ----
+N_MEL      <- 64L
+FRAME_STEP <- 256L
+FMAX       <- 8000.0
+IMG_W      <- 64L
+
+# Fuktion som sätter ihop STFT och plot funktion
+make_panel <- function(file, digit,
+                       show_axes   = TRUE,
+                       show_legend = TRUE,
+                       title_size  = NULL,
+                       title       = NULL) {
+  v <- compute_spec_for_plot(
+    file,
+    frame_step = FRAME_STEP,
+    n_mel      = N_MEL,
+    fmax       = FMAX,
+    img_w      = IMG_W
+  )
+  plot_spec_db_index(
+    S_db        = v$S_db,  # [n_mel x img_w]
+    t           = v$t,     # längd = img_w
+    f_hz        = v$f,     # längd = n_mel
+    title       = title %||% sprintf("Siffra: %d", digit),
+    show_axes   = show_axes,
+    show_legend = show_legend,
+    title_size  = title_size
+  )
+}
+
+# ---- Välj exempel: 1 fil för 0 och 1 per klass 1..9 ----
+set.seed(123)
+df0  <- df %>% filter(y == 0) %>% slice_sample(n = 1)
+df19 <- df %>% filter(y %in% 1:9) %>%
+  group_by(y) %>% slice_sample(n = 1) %>% arrange(y) %>% ungroup()
+
+# ---- Stor panel (0) + 3x3 grid (1–9) ----
+p0 <- make_panel(df0$path, 0,
+                 show_axes   = TRUE,
+                 show_legend = TRUE,
+                 title       = "Log–mel spectrogram (dB), Siffra: 0",
+                 title_size = 12)
+
+plots_minor <- map2(
+  df19$path, df19$y,
+  ~ make_panel(.x, .y,
+               show_axes   = FALSE,
+               show_legend = FALSE,
+               title_size  = 7)
+)
+
+p_grid <- (wrap_plots(plots_minor, ncol = 3) &
+             theme(plot.title = element_text(size = 9, margin = margin(b = 3))))
+
+# ---- Kombinera: stor panel överst, 3x3 under ----
+p_final <- p0 / p_grid + plot_layout(heights = c(1, 1.25)) 
+
+
+# Ladda bild och gör till ggplot-kompatibel grid-grafik
+img <- png::readPNG("ML_kurs/Project/pip_spec3.png")
+g_img <- grid::rasterGrob(img, interpolate = TRUE)
+
+
+
+
+
+p_final2 <- cowplot::ggdraw(p_final & 
+                  theme(
+                    plot.background = element_rect(fill = "gray96",color = NA)
+                    )
+                ) +
+  theme(
+    plot.background = element_rect(fill = "#282b30", color = ),
+    plot.margin     = margin(3, 3, 3, 3)
+  ) 
+
+cowplot::plot_grid(g_img, p_final2, ncol = 2,rel_widths = c(0.7, 1),
+                   labels = c("(a)", "(b)"), label_size = 9)
+
+
+rm(N_MEL, FRAME_STEP, FMAX, IMG_W) # Tar bort frysta parametrar från global env.
+
+```
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE, fig.width = 1.7, fig.height=5.8, eval=FALSE, include=FALSE}
+
+df_5_first_spec <- c(df_display_rel$rel_path[1:5], "...")
+
+kable(data.frame("Fil" = df_5_first_spec))
+
+plots5 <- map(df$path[1:5], ~ {
+  v <- compute_spec_for_plot(.x,
+                             frame_step = 256L,
+                             n_mel = 64L,
+                             fmax = 8000,
+                             img_w = 64L)
+  plot_spec_db_index(v$S_db, v$t, v$f,
+                     show_axes = FALSE,
+                     show_legend = FALSE,
+                     title = NULL)
+})
+
+# Lägg dem i en rad (eller i grid om du vill)
+wrap_plots(plots5, ncol = 1)
+
+```
+
+\pagebreak 
+
+### Spektrogramparametrar
+
+Parametrar och noggranhet av log-mel-spektrogram kommer testas, men vissa parametrar kommer behållas fasta under projektet av logiska själ.
+
+Fasta parametrar:
+
+* **Sample rate: 48 000 Hz**  
+Anger hur många ljudprover som tas per sekund.  
+$\rightarrow$ Fast då AudioMNIST är inspelade med 48000Hz. 
+
+* **Frame step: 256 samples**  
+Anger hur långt steg det är mellan analysfönster i tid för spektrrogrammet.  
+$\rightarrow$ Fast då det inte påverkar uppdelningen av pixlar såvida lågt nog.
+
+* **Frame leangth: 1024 samples**  
+Anger hur långt steg det är mellan analysfönster i frekvens för spektrrogrammet.  
+$\rightarrow$ Fast då det inte påverkar uppdelningen av pixlar såvida lågt nog.
+  
+* **Frekvensintervall: 80-8000 Hz**  
+Anger frekvensintervallet som spektrogrammet är deffinerat över.  
+$\rightarrow$ Fast då 80-8000 är ett godtyckligt intervall för tal.
+
+Rörliga parametrar:
+
+* **img_w: 64-4**  
+Anger hur många pixlar i tid i det slutliga spektrogrammet.
+
+* **Antal mel-band: 64-4**  
+Anger hur många pixlar i frekvens i det slutliga spektrogrammet.
+
+
+## Datauppdelning
+
+För att säkerställa oberoende mellan individer så delades data upp i:
+
+* **Träningsmängd:**  80% (48 individer, 24000 obs)
+
+* **Valideringsmängd:** 10% (6 individer, 3000 obs)
+
+* **Testmängd:**  10% (6 individer, 3000 obs)
+
+Uppdelningen gjordes så att talare inte överlappar mellan grupperna och för att få mer realistiska accuracy-värden för nya observationer. Detta subsekvent leder till att alla klasser är perfekt balanserade i alla delmängder. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!-- __________________________________________________________________________________________________________ -->
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+
+# Metod
+
+## Teori
+
+### Short-time fourier transformation (STFT)
+
+För att analysera hur frekvensinnehållet i an ljudsignal förändra över tiden används STFT.STFT delar upp signalen i korta segment (fönster), multiplicerar varje fönster med en funktion $\omega(t)$ för att sedan ta fouriertranformation av varje segment. Frekvensinnehållet kan då representera som $X(\tau,\omega)$ vilket anger frekvensinhållet som en funktion av tid.
+
+I den kontinuerliga versionen kan STFT definers som:
+
+$$X(\tau, \omega) = \int_{-\infty}^{\infty} x(t)\, w(t - \tau)\, e^{-i \omega t}\, dt $$
+
+I diskret form, för digital signalbehandling, blir summan:
+
+$$X(m, \omega) = \sum_{n} x[n]\, w[n - m]\, e^{-i \omega n}$$
+
+där $x[n]$ är signalvärdena, $w[n]$ är fönsterfunktionen och m är lägesindex som rör sig längs tidsaxeln.  
+
+Den magnitudkvadrerade STFT, $|X(\tau,w)|^2$, utgör spektrogrammet, vilket är den bild de faltade nätverken använder för sina modeller. \textit{Wikipedia, The Free Encyclopedia} (2024)
+
+
+
+### Faltade nätverk (CNN)
+
+Faltade neurala nätverk, ofta förkortade CNN (Convolutional Neural Networks), är en typ av nätverk särskilt lämpade för data med en rumslig eller lokal struktur, exempelvis bilder, tidsserier eller spektrogram. Till skillnad från vanliga MLP nätverk, där varje nod är ansluten till alla noder i föregående lager använder CNN konvolutionella lager för att identifiera lokala mönster i data.
+
+\pagebreak
+
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE , fig.width = 6, fig.height = 3.2, fig.align = 'center', fig.cap=" Exempel på hur en kernel glider över en 2D karta.Källa: Goodfellow, Bengio, Courville (2016)"}
+
+# Ladda bild och gör till ggplot-kompatibel grid-grafik
+img2.2 <- png::readPNG("ML_kurs/Project/Faltning_2.png")
+img2.1 <- png::readPNG("ML_kurs/Project/Kernal.png")
+g_img2.1 <- grid::rasterGrob(img2.1, interpolate = TRUE)
+g_img2.2 <- grid::rasterGrob(img2.2, interpolate = TRUE)
+# Tom plot med färgad bakgrund
+# spacer <- ggplot() + 
+#   theme_void() +
+#   theme(plot.background = element_rect(fill = "gray50", colour = NA))
+
+# cowplot::plot_grid(
+#   g_img2.1, spacer, g_img2.2,
+#   ncol = 3,
+#   rel_widths = c(1, 0.004, 0.8),
+#   labels = c("(a)", "", "(b)"),
+#   label_size = 9
+# )
+
+cowplot::plot_grid(g_img2.1)
+
+
+```
+
+I ett konvolutionellt nätverk används filter (kernels) som små fönster som glider över *input*-data, exempelvis en bild eller ett spektrogram. Vid varje position beräknas en viktad summa av de lokala värden som täcks av kerneln, vilket resulterar i en ny representation (en *feature map*). Genom att kerneln delar vikter över hela *input*-data, reduceras antalet parametrar samtidigt som lokala mönster, såsom kanter eller texturer, fångas upp (figur 2). Detta innebär att varje nod endast är kopplad till ett begränsat område i föregående lager, vilket skapar en gles struktur. I figur 3 illustreras hur denna lokala koppling uppstår. Varje nod påverkas endast av ett fåtal noder från föregående lager, till skillnad från ett helt anslutet nätverk där alla noder är sammankopplade.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE , fig.width = 6, fig.height = 1.5, fig.align = 'center', fig.cap="Bild av glesa kopplingar i ett konvolutionellt lager. Källa: Goodfellow, Bengio, Courville (2016)"}
+cowplot::plot_grid(g_img2.2)
+```
+
+
+
+Matematiskt kan ett Faltat lager i 2 dimensioner beskrivas som,
+
+$$
+y(i,j) = (x * h)(i,j) = \sum_m \sum_n x(m,n)\, h(i - m,\, j - n),
+$$
+
+där $x(m,n)$ är *input*-data (t.ex. ett spektrogram), $h(i,j)$ är filtret (kernal), och $y(i,j)$ är resultatet.
+
+
+
+\pagebreak
+
+
+
+### Optimering och träning
+
+#### Gradient Decent
+
+Gradient descent är en iterativ optimeringsmetod som används för att minimera en kostnadsfunktion $L(\theta)$. Genom att stegvis uppdatera modellens parametrar i negativ riktning mot gradienten söker man sig mot ett lokalt minimum. Uppdateringen sker enligt:
+$$\theta_{m+1} = \theta_m - \gamma \nabla L(\theta_n)$$
+Där $\theta$ representerar modellens parametrar, $\nabla L(\theta)$ är gradienten och $\gamma$ hur stort steg som tas (learning rate). Även om gradient decent inte är en vanlig optimerare är det grunden till de allra flesta som t.ex. RMSProp eller ADAM.(James, G. m.fl., 2023)
+
+#### Lärningshastighet
+
+Lärningshastigheten (learning rate) bestämmer steglängden när gradientnedstigningen uppdaterar vikterna. Om lärningshastigheten är för hög finns risk att stegen hoppar förbi minimum och förlusten divergerar, medan en för låg lärningshastighet gör att träningen går långsamt. (James, G. m.fl., 2023)
+
+#### Epoker och batchstorlek
+
+En epoch är ett helt varv genom träningsmängden. I praktiken delas data upp i mindre delmängder, så kallade batcher, för att effektivisera beräkningen. Batch‑storleken anger hur många observationer som ingår i varje gradientuppdatering. I mini‑batch gradientnedstigning används relativt små batcher. Kombinationen av batch‑storlek och antal epoker påverkar hur många gånger varje observation används i inlärningen. (James, G. m.fl., 2023)
+
+#### Adam
+
+Adam är en adaptiv optimeringsalgoritm som kombinerar momentum och RMSProp. Den uppskattar både första medelvärdet och variansen av gradienterna och uppdaterar vikterna. Algoritmens är populär då den är robust utan att kräva omfattande justering av hyperparametrarna. (James, G. m.fl., 2023) 
+
+#### Padding och stride
+
+I faltade nätverk bestämmer padding och stride hur filtret flyttas över *input*-data. Utan padding krymper utdata‑dimensionerna eftersom kanter faller bort. Genom att lägga till nollor runt *input*-datan (padding) bevaras dimensionen och information i kanterna. Steglängden (stride) anger hur långt filtret förskjuts vid varje position. Standard är stride=1, men en högre steglängd (t.ex. stride=2) gör att filtret hoppar över positioner och därmed halverar upplösningen. (James, G. m.fl., 2023)
+
+#### Batch-normalisering
+
+Batch‑normalisering infördes för att reducera intern kovariat‑förskjutning och stabilisera träningen. Under träningen normaliseras aktiveringarna i varje lager genom att subtrahera mini‑batchens medelvärde och dela med dess standardavvikelse, varefter resultatet multipliceras och adderas med lärda parametrar. Denna normalisering gör det möjligt att använda högre lärningshastigheter och fungerar som en form av regularisering. (James, G. m.fl., 2023)
+
+#### Early stopping
+
+En vanlig metod för att undvika överanpassning i neurala nätverk är *early stopping*. Det innebär att träningen avbryts innan modellen har hunnit anpassa sig för mycket till träningsdatan samt undviker förlängd beräkningstid då modellen redan konvergerat. (James, G. m.fl., 2023)
+
+\pagebreak
+
+### Utvärdering
+#### Träffsäkerhet/Accuracy
+
+För att mäta hur väl modellen klassificerar siffror används främst träffsäkerhet (accuracy). Träffsäkerhet definieras som andelen observationer i testmängden som modellen klassificerar korrekt. Om $\hat{y}_i$ är modellens gissning på observation $i$ och $y_i$ är den sanna klassen, ges träffsäkerheten av $\frac{1}{n}\sum_{i=1}^{n}{1}\{\hat{y}_i = y_i\}$. För att undvika överanpassning delas data i en tränings, validerings och testmängd. Valideringsmängden används för hyperparametrar och tidig stoppning, medan testmängden hålls helt orörd tills slutlig utvärdering. Utöver träffsäkerhet kan man också undersöka förlusten (cross‑entropy‑loss) och analysera klassvis *sensitivity* och *specifity*, för att bekämpa klass biases. (James, G. m.fl., 2023)
+
+
+
+\pagebreak
+
+## Praktisk metod
+
+I den praktiska delen av metodkapitlet beskrivs hur metoder appliceras empiriskt på AudioMNIST och hur experiment strukureras för att besvara frågeställningen.
+
+### Datauppdelning och pipeline
+
+Först delades datamaterialet i separata mängder på talarnivå: **träning**, **validering** och **test**. Varje talare tillhör endast en uppdelning för att undvika läckage mellan träning och utvärdering. Utifrån `df` delades talarna slumpmässigt med förhållandet 80% / 10% / 10%. Valideringsmängden används för att välja hyperparametrar och använda tidig stoppning, medan testmängden hålls orörd tills slutlig utvärdering
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+
+set.seed(123)
+
+# split
+prop_train <- 0.80
+prop_val <- 0.10
+prop_test <- 0.10
+
+#Unika talare, floor() avrundar neråt
+spk_all <- unique(df$spk)
+n      <- length(spk_all)
+n_train <- floor(n * prop_train)
+n_val   <- floor(n * prop_val)
+n_test  <- n - n_train - n_val
+
+# Slumpar ordning på talare och dela upp i tre högar
+spk_shuf  <- sample(spk_all, n)
+spk_train <- spk_shuf[seq_len(n_train)]
+spk_val   <- spk_shuf[seq.int(n_train + 1, n_train + n_val)]
+spk_test  <- setdiff(spk_shuf, c(spk_train, spk_val))
+
+# skapar df_split, df med split-labels (train/val/test)
+library(dplyr)
+df_split <- df %>%
+  mutate(split = case_when(
+    spk %in% spk_train ~ "train",
+    spk %in% spk_val   ~ "val",
+    TRUE               ~ "test"
+  ))
+
+# skapr df_namn för varje split
+df_train <- filter(df_split, split == "train")
+df_val   <- filter(df_split, split == "val")
+df_test  <- filter(df_split, split == "test")
+
+
+## kontroll
+#c(train = length(spk_train), val = length(spk_val), test = length(spk_test))
+
+# True
+# length(intersect(spk_train, spk_val))  == 0
+# length(intersect(spk_train, spk_test)) == 0
+# length(intersect(spk_val,   spk_test)) == 0
+
+## (c) Klassfördelning per split (ska vara rimligt jämn i AudioMNIST)
+library(tidyr)
+table_raw <- bind_rows(
+  count(df_train, y, name = "n") %>% mutate(split = "träning"),
+  count(df_val,   y, name = "n") %>% mutate(split = "validering"),
+  count(df_test,  y, name = "n") %>% mutate(split = "test")
+)
+
+table_balans <- pivot_wider(
+  table_raw,
+  names_from  = split,
+  values_from = n,
+  values_fill = 0
+) %>% arrange(y)
+
+rm(spk_all, n, n_train, n_val, n_test)
+
+kable(as.data.frame(t(table_balans)), col.names = NULL, caption = "Klass-fördelning efter split")
+
+
+```
+
+
+Ljudklippen konverterades till log‑mel‑spektrogram via funktionen `tf_preprocess_factory()` (se bilaga). Standardparametrar är samplingfrekvens 48kHz, fönsterstorlek 1024 sampel, hopplängd 256 sampel, och frekvensintervall 80–8000Hz. De resulterande spektrogrammen normaliseras och klipps till –80 dB som referens för neural nätverkens *input*-data.
+
+<!-- AI-genererad -->
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+
+
+# ---- setup-constants ----
+SAMPLE_RATE  <- 48000.0
+NUM_CLASSES  <- 10L
+FRAME_LENGTH <- 1024L
+FRAME_STEP   <- 256L
+FMIN         <- 80.0
+FMAX         <- 8000.0
+CLIP_DB      <- 80.0
+
+AUTOTUNE <- tryCatch(tf$data$AUTOTUNE,
+  error = function(...) tf$data$experimental$AUTOTUNE
+)
+
+tf_preprocess_factory <- function(frame_step = 256L,
+                                  n_mel = 64L,
+                                  fmin = 80.0,
+                                  fmax = 8000.0,
+                                  img_w = 64L) {
+  
+  function(elem) {
+    file  <- elem$path
+    label <- elem$label
+    
+    # Läs WAV (TF) och säkerställ fast SR (48 kHz)
+    audio_bin <- tf$io$read_file(file)
+    dec <- tf$audio$decode_wav(audio_bin, desired_channels = 1L)
+    tf$debugging$assert_equal(dec$sample_rate, tf$cast(SAMPLE_RATE, tf$int32))
+    wav <- tf$squeeze(dec$audio, axis = -1L)   # [samples]
+    
+    # STFT
+    stft <- tf$signal$stft(
+      wav,
+      frame_length = as.integer(FRAME_LENGTH),
+      frame_step   = as.integer(frame_step),
+      fft_length   = as.integer(FRAME_LENGTH),
+      window_fn    = tf$signal$hann_window
+    )
+    mag <- tf$abs(stft)                         # [time, freq_lin]
+    
+    # Lin -> mel (power)
+    num_spec_bins <- as.integer(FRAME_LENGTH/2 + 1L)
+    mel_w <- tf$signal$linear_to_mel_weight_matrix(
+      num_mel_bins         = as.integer(n_mel),
+      num_spectrogram_bins = num_spec_bins,
+      sample_rate          = SAMPLE_RATE,
+      lower_edge_hertz     = fmin,
+      upper_edge_hertz     = fmax,
+      dtype                = tf$float32
+    )
+    mel_power <- tf$matmul(tf$square(mag), mel_w)    # [time, n_mel]
+    
+    # dB + normalisering per klipp: [-CLIP_DB, 0]
+    ln10 <- tf$math$log(10.0)
+    S_db <- 10.0 * tf$math$log(mel_power + 1e-10) / ln10
+    S_db <- S_db - tf$reduce_max(S_db)               # topp = 0 dB
+    S_db <- tf$maximum(S_db, -CLIP_DB)               # klipp
+    
+    # Skala till [0,1] för nätet
+    S01 <- (S_db + CLIP_DB) / CLIP_DB                # [-C,0] -> [0,1]
+    
+    # [time, mel] -> [mel, time, 1] och resiza till [n_mel, img_w, 1]
+    img <- tf$expand_dims(S01, axis = -1L)           # [time, mel, 1]
+    img <- tf$transpose(img, perm = c(1L, 0L, 2L))   # [mel, time, 1]
+    img <- tf$image$resize(img, size = as.integer(c(as.integer(n_mel), as.integer(img_w))))
+    img <- tf$clip_by_value(img, 0, 1)
+    img <- tf$ensure_shape(img, shape = reticulate::tuple(
+      as.integer(n_mel), as.integer(img_w), 1L
+    ))
+    
+    # One-hot label
+    y <- tf$one_hot(tf$cast(label, tf$int32), depth = as.integer(NUM_CLASSES))
+    
+    reticulate::tuple(img, y)
+  }
+}
+``` 
+
+<!-- AI-genererad -->
+```{r, echo = FALSE, message=FALSE, warning=FALSE }
+
+make_dataset <- function(df_split, preprocess_fn, batch_size = 32L, shuffle = TRUE) {
+  ds <- tensor_slices_dataset(list(
+    path  = as.character(df_split$path),
+    label = as.integer(df_split$y)
+  )) %>% dataset_map(preprocess_fn, num_parallel_calls = AUTOTUNE)
+  
+  # Lägger till shuffle möjlighet
+  if (shuffle) ds <- ds %>% dataset_shuffle(buffer_size = as.integer(min(nrow(df_split), 10000L)))
+  ds %>% dataset_batch(as.integer(batch_size)) %>% dataset_prefetch(AUTOTUNE)
+}
+
+
+```
+
+
+### Basmodell
+
+Som utgångspunkt tränas en **basmodell** med måttlig komplexitet. Den består av tre konvolutionslager (16, 32 och 64 filter) med (3x3)‑kernlar, `ReLU`‑aktivering och `max pooling` efter de två första lagren. Därefter appliceras global medelpoolning, dropout $(p=0.2)$ och ett denselag med `softmax`‑aktivering. Arkitekturen motsvarar funktionen `Base_model()` i bilagan. Optimiseraren är `Adam` med standardinställningar och förlustfunktionen `categorical_crossentropy`. Träningen avbryts med tidig stoppning om valideringsförlusten inte förbättras under tre epoker.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE }
+
+Base_model <- function(img_h, img_w, num_classes = NUM_CLASSES) {
+  inputs <- layer_input(shape = c(as.integer(img_h), as.integer(img_w), 1L))
+  
+  # NN
+  x <- inputs %>%
+    layer_conv_2d(16L, c(3,3), activation="relu", padding="same") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(32L, c(3,3), activation="relu", padding="same") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(64L, c(3,3), activation="relu", padding="same") %>%
+    layer_global_average_pooling_2d() %>%
+    layer_dropout(0.2)
+  outputs <- layer_dense(x, units = num_classes, activation = "softmax")
+  model <- keras_model(inputs, outputs)
+  
+  # Compiler
+  model %>% compile(optimizer="adam", loss="categorical_crossentropy", metrics=list("accuracy"))
+  model
+}
+
+
+```
+
+\pagebreak
+
+### Experiment 1: spektrogramparametrar
+
+För att undersöka hur förbehandlingsparametrarna påverkar modellen (fråga 2 och 3) utgår vi från basmodellen men varierar antalet mel‑band och tidsupplösning. Följande fyra konfigurationer testas:
+
+
+```{r, echo=FALSE}
+configs <- tibble::tribble(
+  ~id, ~n_mel, ~img_w,
+  "A", 64L, 64L,
+  "B", 32L, 32L,
+  "C", 16L, 16L,
+  "D",  4L,  4L
+)
+knitr::kable(configs, col.names = c("ID","n_mel","bildbredd"),
+             caption = "Konfigurationer i Experiment 1: antal mel‑band och bildbredd (pixlar).")
+```
+
+För varje konfiguration genereras spektrogram med `n_mel` mel‑band och tidsupplösning så att bildbredden blir `img_w`. Basmodellen tränas med identiska hyperparametrar (batchstorlek=32, maximal antal epoker=20, early stopping) och loggar validerings‑ och test-accuracy samt antal parametrar och träningstid. Syftet är att hitta den minsta upplösning som behåller hög noggrannhet och ger kortare träningstid.
+
+För att ge en visuell uppfattning visas i Figur 4, 10 spektrogram per rad för att kunna se skillnaden på upplösningen enligt tabell 4. Kolumnerna är representativa till siffrorna 0-9. Dessa produceras med funktionen `compute_spec_for_plot()` och `plot_spec_db_index`.
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE , fig.width = 7, fig.height = 3,fig, fig.align = 'center', fig.cap="Exempel på input-data till modellerna vid olika upplösningar (A–D). Varje rad motsvarar en konfiguration och varje kolumn en talad siffra (0–9)."}
+
+library(tibble)
+library(purrr)
+library(patchwork)
+library(dplyr)
+set.seed(42)
+
+pick_one_per_digit <- function(d) {
+  d %>%
+    mutate(y = as.integer(y)) %>%
+    filter(y %in% 0:9) %>%
+    group_by(y) %>%
+    slice_sample(n = 1) %>%
+    ungroup() %>%
+    arrange(y) %>%
+    pull(path)
+}
+
+paths10 <- if (exists("df_test")) pick_one_per_digit(df_test) else pick_one_per_digit(df)
+stopifnot(length(paths10) == 10)   # kolumn 1..10 = 0..9
+
+
+configs <- tribble(
+  ~id, ~n_mel, ~img_w,
+  "A",   64L,    64L,
+  "B",   32L,    32L,
+  "C",   16L,    16L,
+  "D",    4L,     4L
+)
+
+render_row <- function(paths, n_mel, img_w, main_lab = NULL) {
+  ps <- map(paths, ~{
+    v <- compute_spec_for_plot(.x,
+                               frame_step = 256L,
+                               n_mel = n_mel,
+                               fmax = 8000,
+                               img_w = img_w)  # ta bort om din version saknar img_w
+    plot_spec_db_index(v$S_db, v$t, v$f,
+                       show_axes = FALSE,
+                       show_legend = FALSE,
+                       title = NULL)
+  })
+  row_plot <- wrap_plots(ps, ncol = 10)
+  if (!is.null(main_lab)) row_plot <- row_plot + plot_annotation(title = main_lab)
+  row_plot
+}
+
+row_A <- render_row(paths10, n_mel = 64L, img_w = 64L, main_lab = "A: 64x64")
+row_B <- render_row(paths10, n_mel = 32L, img_w = 32L, main_lab = "B: 32x32")
+row_C <- render_row(paths10, n_mel = 16L, img_w = 16L, main_lab = "C: 16x16")
+row_D <- render_row(paths10, n_mel =  4L, img_w =  4L, main_lab = "D: 4x4")
+
+grid_AD <- (row_A / row_B / row_C / row_D) + plot_layout(heights = c(1,1,1,1))
+
+bg_grid <- cowplot::ggdraw(grid_AD & 
+                  theme(
+                    plot.background = element_rect(fill = "gray90",color = NA)
+                    )
+                )
+
+bg_grid
+
+```
+
+\pagebreak
+
+### Experiment 2: Test av Modell-arkitekturer
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE }
+
+Model_Deep <- function(img_h, img_w, num_classes = NUM_CLASSES) {
+  inputs <- layer_input(shape = c(as.integer(img_h), as.integer(img_w), 1L))
+
+  x <- inputs %>%
+    layer_conv_2d(16L, c(3,3), activation="relu", padding="same") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(32L, c(3,3), activation="relu", padding="same") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(32L, c(3,3), activation="relu", padding="same") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(64L, c(3,3), activation="relu", padding="same") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(64L, c(3,3), activation="relu", padding="same") %>%
+    layer_global_average_pooling_2d() %>%
+    layer_dropout(0.2)
+
+  outputs <- layer_dense(x, units = num_classes, activation = "softmax")
+  model <- keras_model(inputs, outputs)
+
+  model %>% compile(
+    optimizer = "adam",
+    loss = "categorical_crossentropy",
+    metrics = "accuracy"
+  )
+  model
+}
+
+
+
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE }
+
+Model_BN <- function(img_h, img_w, num_classes = NUM_CLASSES) {
+  inputs <- layer_input(shape = c(as.integer(img_h), as.integer(img_w), 1L))
+
+  x <- inputs %>%
+    layer_conv_2d(16L, c(3,3), padding="same") %>%
+    layer_batch_normalization() %>%
+    layer_activation("relu") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(32L, c(3,3), padding="same") %>%
+    layer_batch_normalization() %>%
+    layer_activation("relu") %>%
+    layer_max_pooling_2d() %>%
+    layer_conv_2d(64L, c(3,3), padding="same") %>%
+    layer_batch_normalization() %>%
+    layer_activation("relu") %>%
+    layer_global_average_pooling_2d() %>%
+    layer_dropout(0.2)
+
+  outputs <- layer_dense(x, units = num_classes, activation = "softmax")
+  model <- keras_model(inputs, outputs)
+
+  model %>% compile(
+    optimizer = "adam",
+    loss = "categorical_crossentropy",
+    metrics = "accuracy"
+  )
+  model
+}
+
+
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE }
+
+Model_Stride <- function(img_h, img_w, num_classes = NUM_CLASSES) {
+  inputs <- layer_input(shape = c(as.integer(img_h), as.integer(img_w), 1L))
+
+  x <- inputs %>%
+    layer_conv_2d(16L, c(3,3), strides=2, activation="relu", padding="same") %>%
+    layer_conv_2d(32L, c(3,3), strides=2, activation="relu", padding="same") %>%
+    layer_conv_2d(64L, c(3,3), strides=2, activation="relu", padding="same") %>%
+    layer_global_average_pooling_2d() %>%
+    layer_dropout(0.2)
+
+  outputs <- layer_dense(x, units = num_classes, activation = "softmax")
+  model <- keras_model(inputs, outputs)
+
+  model %>% compile(
+    optimizer = "adam",
+    loss = "categorical_crossentropy",
+    metrics = "accuracy"
+  )
+  model
+}
+
+
+```
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+  # Lista med modeller
+  models_list <- list(
+    Base   = Base_model,
+    Deep   = Model_Deep,
+    BN     = Model_BN,
+    Stride = Model_Stride
+  )
+
+```
+
+För att undersöka hur nätverkets arkitektur påverkar modellens prestanda jämförs fyra faltade nätverksvarianter: basmodellen (*Base*), en djupare modell (*Deep*), en version med batch‑normalisering (*BN*) och en modell som använder strides istället för pooling (*Stride*).
+
+Basmodellen fungerade som referens och bestod av tre konvolutionella lager (16, 32 och 64 filter) med 3x3‑kärnor, `ReLU`‑aktivering, max‑pooling efter de två första lagren, global medelpoolning och dropout(p=0.2). Den djupa modellen utökades till fem konvolutionella lager, fortfarande med max‑pooling, global medelpoolning och dropout, för att testa om ett ökat djup gav bättre mönsterigenkänning. I BN‑modellen infördes batch‑normalisering efter varje faltning innan aktiveringsfunktionen.I Stride‑modellen ersatte poolinglagren med konvolutioner med steg (strides) på 2x2, vilket reducerar dimensionerna och antalet parametrar men också kan leda till informationsförlust. Alla modeller modellarkitekturer visas i tabell 5.
+
+Samtliga modeller tränadas med identiska hyperparametrar: log‑mel‑spektrogram med mel‑band och tidssteg faststälda efter experiment 1, batchstorlek 32, maximalt 20 epoker, `Adam` som optimerare och `categorical_crossentropy` som förlustfunktion. Tidig stoppning användes med tålamod 3 epoker baserat på valideringsförlusten. Preprocessingen av ljuddata och uppdelningen av träning, validering och testmängder var samma som i experiment 1. Efter träningen sparades den bästa viktkombinationen för varje modell baserat på högsta valideringsnoggrannhet.
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+# Skapa tabell för modellarkitekturer
+tab_modeller <- data.frame(
+  Modell = c("Base", "Deep", "BN", "Stride"),
+  `layer_conv_filters` = c(
+    "16 - 32 - 64",
+    "16 - 32 - 32 - 64 - 64",
+    "16 - 32 - 64",
+    "16 - 32 - 64 (alla med stride=2)"
+  ),
+  Pooling = c(
+    "MaxPool 2x2 efter de två första",
+    "MaxPool 2x2 efter de fyra första",
+    "MaxPool 2x2 efter de två första",
+    "Stride-conv (ingen pooling)"
+  ),
+  Normalisering = c(
+    "-",
+    "-",
+    "BatchNorm efter varje conv",
+    "-"
+  ),
+  Aktivering = c(
+    "ReLU",
+    "ReLU",
+    "ReLU (efter BN)",
+    "ReLU"
+  ),
+  Dropout = rep("0.2", 4),
+  Layer_dense = rep("softmax", 4),
+  stringsAsFactors = FALSE
+)
+
+# Visa som kable-tabell
+kable(
+  tab_modeller,
+  caption = "Översikt över de fyra testade modellarkitekturerna.",
+  align = "c"
+)
+```
+
+
+
+### Modellanalys
+
+En av de bästa modellerna kommer väljas ut där efter för att utvärderas jämtemot testdata där en förväxlingsmatris skapas för att se vart modellen eventuellt har problem att katogisera rätt.
+
+
+
+### Mjukvara
+
+Alla experiment körs i **R** med paketet `keras3` för att bygga och träna CNN‑modeller, `tensorflow` för STFT och mel‑filterbank, `tfdatasets` för datahantering, samt `ggplot2`, `patchwork` och `kableExtra` för visualisering. Slumpvariabler fixeras med `set.seed()` och `tf$random$set_seed()` för reproducerbarhet. Flera hjälpfunktioner, såsom `compute_spec_for_plot()` och modellbyggare (`Base_model()`, `Model_Deep()`, `Model_BN()`, `Model_Stride()`, definieras i bilagan.
+
+
+
+
+<!-- __________________________________________________________________________________________________________ -->
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+# Resultat
+
+## Experiment 1: spektrogramparametrar
+
+För att utvärdera hur spektrogram-upplösningen som används när ljudklippen omvandlas till log‑mel‑spektrogram påverkar modellens prestanda genomfördes ett första experiment.  Basmodellen från metodkapitlet tränades separat med fyra olika kombinationer av mel‑band och tidsupplösning (bildbredd).  Övriga hyperparametrar hölls konstanta: fönsterlängd 1024 sampel, hopplängd 256 sampel, frekvensintervall 80–8000 Hz, batchstorlek 32 och tidig stoppning med tålamod tre epoker.
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE }
+configs_exp1 <- tibble::tribble(
+  ~ID, ~n_mel, ~img_w,
+  "A", 64L, 64L,
+  "B", 32L, 32L,
+  "C", 16L, 16L,
+  "D",  4L,  4L
+)
+# kable(configs_exp1,
+#       col.names = c("ID","mel‑band","Bildbredd"),
+#       caption = "Konfigurationer i Experiment 1: antal mel‑band (höjd) och bildbredd (pixlar).")
+```
+
+
+För varje konfiguration tränades basmodellen på träningsdatan, med separat validering och testmängder. För varje körning registrerades modellens validering och test-accuracy, antal epoker tills tidig stoppning, den totala träningstiden samt antalet träningsbara parametrar. Dataseten och förbehandlings- samt modellstrukturen är desamma som beskrivits i metodavsnittet ovan.
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+# Gör så jag inte behöver köra om modellerna och
+# tar bara resultat från sparad fil
+if (file.exists("results_exp1.4.rds")) {
+  results_exp1 <- readRDS("results_exp1.4.rds")
+} else {
+
+# Initiera resultatlista
+results_exp1 <- vector("list", nrow(configs_exp1))
+# Loopning av A till D
+for (i in seq_len(nrow(configs_exp1))) {
+  id    <- configs_exp1$ID[i]
+  n_mel <- configs_exp1$n_mel[i]
+  img_w <- configs_exp1$img_w[i]
+
+  # Förbehandling för aktuell konfiguration (A-D) med tf_preprocess_factory()
+  prep_fn <- tf_preprocess_factory(n_mel = n_mel,
+                                   frame_step = 256L,
+                                   fmin = 80.0,
+                                   fmax = 8000.0,
+                                   img_w = img_w)
+
+  # Skapar mina Datasets med prep_fn Batch_size=32
+  train_ds <- make_dataset(df_train, prep_fn, batch_size = 32L, shuffle = TRUE)
+  val_ds   <- make_dataset(df_val,   prep_fn, batch_size = 32L, shuffle = FALSE)
+  test_ds  <- make_dataset(df_test,  prep_fn, batch_size = 32L, shuffle = FALSE)
+
+  # Modell, använder Base_model
+  model <- Base_model(img_h = as.integer(n_mel),
+                      img_w = as.integer(img_w),
+                      num_classes = NUM_CLASSES)
+
+  # Mina Callbacks
+  cb_list <- list(
+    callback_early_stopping(monitor = "val_loss",
+                            patience = 3,
+                            restore_best_weights = TRUE)
+  )
+
+  # Börjar mäta tid
+  t0 <- Sys.time()
+  #Tränar Data (20 epok)
+  history <- model %>% fit(
+    train_ds,
+    validation_data = val_ds,
+    epochs = 20L,
+    callbacks = cb_list,
+    verbose = 2
+  )
+  # slutar mäta tid och tar diffen.
+  t1 <- Sys.time()
+  train_time <- as.numeric(difftime(t1, t0, units = "secs"))
+
+  # Hämta bästa validerings-accuracy (lägst valideringsförlust)
+  val_loss <- as.numeric(history$metrics$val_loss)
+  val_acc  <- as.numeric(history$metrics$val_accuracy)
+  loss_tr  <- as.numeric(history$metrics$loss)          # nytt
+  acc_tr   <- as.numeric(history$metrics$accuracy)      # nytt
+  best_idx <- which.min(val_loss)
+  best_val_acc <- val_acc[best_idx]
+  best_train_acc <- acc_tr[best_idx]                    # nytt
+
+  # Utvärdera på testmängden
+  test_res <- model %>% evaluate(test_ds, verbose = 0)
+  test_acc <- as.numeric(test_res["accuracy"])
+
+  # Antal parametrar i modellen
+  param_count <- sum(model$count_params())
+
+  # Sparar mina resultat i results_exp1
+  results_exp1[[i]] <- tibble(
+    ID              = id,
+    n_mel           = n_mel,
+    img_w           = img_w,
+    train_accuracy  = best_train_acc, #nytt
+    val_accuracy    = best_val_acc,
+#   test_accuracy   = test_acc,
+    epochs_trained  = length(val_loss),
+    train_time_sec  = train_time,
+    parameters      = param_count
+  )
+}
+
+results_exp1 <- dplyr::bind_rows(results_exp1)
+saveRDS(results_exp1, file = "results_exp1.4.rds")
+}
+
+# Visa tabell
+kable(results_exp1,
+      digits = 3,
+      caption = "Resultat för Experiment 1. Tränings- och valideringsaccuracy (vid epoken med lägst valideringsförlust), antal epoker, träningstid (sekunder) och antal modellparametrar per konfiguration.")
+```
+
+
+
+```{r exp1_plot, echo=FALSE, message=FALSE, warning=FALSE, fig.width=5, fig.height=3, fig.cap=" Träning och valideringsaccuracy per konfiguration i experiment 1"}
+
+# results_long <- tidyr::pivot_longer(
+#   results_exp1,
+#   cols = c("val_accuracy","test_accuracy"),
+#   names_to = "Metric",
+#   values_to = "Accuracy"
+# )
+# 
+# ggplot(results_long, aes(x = ID, y = Accuracy, fill = Metric)) +
+#   geom_col(position = position_dodge(width = 0.9)) +
+#   scale_y_continuous(limits = c(0, 1),
+#                      labels = scales::percent_format(accuracy = 1)) +
+#   labs(x = "Konfiguration", y = "Accuracy", fill = "") +
+#   theme_gray()
+
+results_long <- tidyr::pivot_longer(
+  results_exp1,
+  cols = c("train_accuracy", "val_accuracy"),
+  names_to = "Metric",
+  values_to = "Accuracy"
+) |>
+  dplyr::mutate(
+    Metric = factor(Metric,
+                    levels = c("train_accuracy","val_accuracy"),
+                    labels = c("Träning","Validering"))
+  )
+
+# --- Plot: Träning vs Validering ---
+ggplot(results_long, aes(x = ID, y = Accuracy, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  scale_y_continuous(limits = c(0, 1),
+                     labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Konfiguration", y = "Accuracy", fill = "") +
+  theme_gray()
+
+```
+
+\pagebreak
+
+## Experiment 2: Test av Modell-arkitekturer
+
+
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+
+
+if (file.exists("results_exp2.rds")) {
+  results_exp2 <- readRDS("results_exp2.rds")
+} else {
+
+  results_exp2 <- vector("list", length(models_list))
+  names(results_exp2) <- names(models_list)
+
+  for (m in names(models_list)) {
+    # fixa förbehandlingsfunktion för 16x16
+    prep_fn <- tf_preprocess_factory(
+      n_mel = 16L,
+      frame_step = 256L,
+      fmin = 80.0,
+      fmax = 8000.0,
+      img_w = 16L
+    )
+    # data
+    train_ds <- make_dataset(df_train, prep_fn, batch_size = 32L, shuffle = TRUE)
+    val_ds   <- make_dataset(df_val,   prep_fn, batch_size = 32L, shuffle = FALSE)
+    test_ds  <- make_dataset(df_test,  prep_fn, batch_size = 32L, shuffle = FALSE)
+    # modell
+    model <- models_list[[m]](img_h = 16L, img_w = 16L, num_classes = NUM_CLASSES)
+    # callbacks
+    cb_list <- list(
+      callback_early_stopping(monitor = "val_loss", patience = 3, restore_best_weights = TRUE)
+    )
+    # träna och mät tid
+    t0 <- Sys.time()
+    history <- model %>% fit(
+      train_ds,
+      validation_data = val_ds,
+      epochs = 20L,
+      callbacks = cb_list,
+      verbose = 2
+    )
+    train_time <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+    # bästa valideringsaccuracy
+    val_loss <- as.numeric(history$metrics$val_loss)
+    val_acc  <- as.numeric(history$metrics$val_accuracy)
+    best_idx <- which.min(val_loss)
+    best_val_acc <- val_acc[best_idx]
+    # testprecision
+    test_res <- model %>% evaluate(test_ds, verbose = 0)
+    test_acc <- as.numeric(test_res["accuracy"])
+    # param count
+    param_count <- sum(model$count_params())
+    # lagra
+    results_exp2[[m]] <- tibble(
+      Modell         = m,
+      val_accuracy   = best_val_acc,
+      test_accuracy  = test_acc,
+      epochs_trained = length(val_loss),
+      train_time_sec = train_time,
+      parameters     = param_count
+    )
+    # rensa
+    #clear_tf()
+  }
+  results_exp2 <- dplyr::bind_rows(results_exp2)
+  saveRDS(results_exp2, "results_exp2.rds")
+}
+
+# tabell: visa accuracies och res
+knitr::kable(
+  results_exp2 %>% 
+    mutate(
+      val_accuracy = round(val_accuracy, 3),
+      test_accuracy = round(test_accuracy, 3),
+      train_time_sec = round(train_time_sec, 1),
+      parameters = format(parameters, big.mark = " ")
+    ),
+  digits = 3,
+  col.names = c("Modell","Val‑accuracy","Test‑accuracy","Epoker","Traningstid (s)","Parametrar"),
+  caption = "Resultat för Experiment 2: validerings‑ och test‑accuracy, antal epoker, träningstid och parametrar för varje modellarkitektur."
+)
+
+```
+
+
+
+
+```{r, echo=FALSE, fig.width=5, fig.height=3, message=FALSE, warning=FALSE, fig.align='center', fig.cap="Validerings och testaccuracy för modellarkitekturerna i Experiment 2"}
+
+# förbereda data för stapeldiagram
+results_exp2_long <- tidyr::pivot_longer(
+  results_exp2,
+  cols = c("val_accuracy","test_accuracy"),
+  names_to = "Metric",
+  values_to = "Accuracy"
+) %>%
+  mutate(
+    Metric = recode(Metric,
+                    val_accuracy = "Validering",
+                    test_accuracy = "Test")
+  )
+
+ggplot(results_exp2_long, aes(x = Modell, y = Accuracy, fill = Metric)) +
+  geom_col(position = position_dodge(width = 0.9)) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent_format(accuracy = 1)) +
+  labs(x = "Modellarkitektur", y = "Accuracy", fill = "") +
+  theme_gray()
+
+
+
+```
+
+
+I tabell 7 och figur 6 kan det synas att mindre ändringar till *Base* modellen inte leder till någon större skillnad även över upprepade försök. Den djupa modellen (*Deep*) uppnådde den bästa validerings och testnoggrannheten av de valda arkitekturerna, vilket tyder på att ett ökat antal lager förbättrar nätvarkets förmåga att lära sig komplexa mönster i spektrogrammen.(*BN*) och (*Stride*) ser ut att prestera på en liknande nivå.
+
+\pagebreak
+
+## Utvärdering-mått
+
+Tabell 8 visar förväxlingsmatrisen för Deep_model (16x16) på testdatan, vilket sammanfattar modellens klassificeringsresultat för de tio sifferklasserna (0-9). Den diagonala linjen framträder tydligt, vilket indikerar på att majoriteten av observationer klassats korrekt. De få felklassade observationerna uppstår främst mellan 1 och 9, samt 0 och 2.
+
+Den Klassvisa träffsäkerheten redovisas i tabell 9, där samtliga klasser visar hög *accuracy*, med värden över 95%. 
+
+<!-- Stor del AI-genererad -->
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+# ---- SLUTMODELL: Base_model på 16x16 + förväxlingsmatris ----
+# Förutsätter att: Base_model(), tf_preprocess_factory(), make_dataset(),
+# df_train/df_val/df_test och NUM_CLASSES finns.
+
+`%||%` <- function(a,b) if (!is.null(a)) a else b
+
+dir.create("models_final", showWarnings = FALSE)
+model_path <- file.path("models_final", "base_16x16.keras")
+
+# 1) Träna eller ladda Base_model (16x16)
+if (file.exists(model_path)) {
+  message("addar sparad Base_model från disk: ", model_path)
+  model_final <- keras3::load_model(model_path)
+} else {
+  message("Tränar Base_model (16x16) och sparar till disk...")
+
+  # preprocess (16x16)
+  prep_fn <- tf_preprocess_factory(
+    n_mel = 16L, frame_step = 256L,
+    fmin = 80.0, fmax = 8000.0, img_w = 16L
+  )
+
+  # dataströmmar
+  train_ds <- make_dataset(df_train, prep_fn, batch_size = 32L, shuffle = TRUE)
+  val_ds   <- make_dataset(df_val,   prep_fn, batch_size = 32L, shuffle = FALSE)
+
+  # modell
+  model_final <- Model_Deep(img_h = 16L, img_w = 16L, num_classes = NUM_CLASSES)
+
+  # callbacks (enkel och stabil)
+  cb_list <- list(
+    callback_early_stopping(monitor = "val_loss", patience = 3, restore_best_weights = TRUE)
+  )
+
+  # träna
+  history <- model_final %>% fit(
+    train_ds,
+    validation_data = val_ds,
+    epochs = 20L,
+    callbacks = cb_list,
+    verbose = 2
+  )
+
+  # spara hel modell (arkitektur + vikter)
+  keras3::save_model(model_final, model_path)
+  message("Sparad till: ", model_path)
+}
+
+# 2) Förväxlingsmatris på test (alltid med samma preprocess och utan shuffle)
+prep_fn_test <- tf_preprocess_factory(
+  n_mel = 16L, frame_step = 256L,
+  fmin = 80.0, fmax = 8000.0, img_w = 16L
+)
+test_ds <- make_dataset(df_test, prep_fn_test, batch_size = 32L, shuffle = FALSE)
+
+# total test-accuracy (snabb koll)
+test_eval <- model_final %>% evaluate(test_ds, verbose = 0)
+test_acc  <- as.numeric(test_eval[["accuracy"]] %||% test_eval[["acc"]])
+message(sprintf("Test-accuracy (Base 16x16): %.3f", test_acc))
+
+# prediktioner
+preds  <- model_final %>% predict(test_ds, verbose = 0)
+y_pred <- max.col(preds) - 1L  # klasser 0..9
+
+# sanna etiketter i samma ordning som test_ds levererar
+y_true <- integer(0)
+it <- reticulate::as_iterator(test_ds)
+repeat {
+  b <- try(reticulate::iter_next(it), silent = TRUE)
+  if (inherits(b, "try-error") || is.null(b)) break
+  yb <- as.array(b[[2]])
+  if (length(dim(yb)) > 1L) {
+    # one-hot -> klassindex 0..9
+    y_true <- c(y_true, max.col(yb) - 1L)
+  } else {
+    # redan heltalsetiketter 0..9
+    y_true <- c(y_true, as.integer(yb))
+  }
+}
+
+# 3) Bygg och visa förväxlingsmatris + klassvis accuracy
+cm <- table(Truth = factor(y_true, levels = 0:9),
+            Pred  = factor(y_pred, levels = 0:9))
+
+knitr::kable(
+  cm,
+  caption = "Forvaxlingsmatris på test för Deep_model (16x16)."
+)
+
+
+
+
+
+acc_per_class <- diag(prop.table(cm, 1))  # rad-normaliserad diagonal
+acc_tbl <- tibble::tibble(Klass = 0:9, Accuracy = as.numeric(acc_per_class))
+
+acc_tbl_wide <- acc_tbl %>%
+  dplyr::mutate(Accuracy = round(Accuracy * 100, 1)) %>%
+  tidyr::pivot_wider(names_from = Klass, values_from = Accuracy)
+
+knitr::kable(
+  acc_tbl_wide,
+  col.names = paste0(0:9),
+  caption = "Klassvis accuracy (%) for Deep_model (16x16)"
+)
+
+
+```
+
+
+
+
+
+
+
+
+
+<!-- __________________________________________________________________________________________________________ -->
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+# Diskussion
+
+Resultatet visar att modellen lyckades uppnå mycket hög noggranhet även när upplösningen på spektrogrammen reducerades kraftigt. Det tyder på att en stor del av den information som krävs för att klassifiera siffrorna nödvändigtvis inte ligger i de finare frekvens eller tiddetaljerna, utan i det övergripande mönstret av färgstyrkan (dB). Detta kan förklara varför även de mest komprimerade bilderna fortfarande gav bra prestanda.
+
+Ett annat resultat är hur rubust de faltade nätverken visade sig vara mot just denna typen av data. CNN-arkitekturen visade generellt bra resultat över många arkitekturer när det kom till detta ljud-data.
+
+Etiskt sett innehåller AudioMNIST inget känsligt material, och inga individuella identiteter analyserades. Liknande modeller skulle dock kunna användas vid tillämpning av att identifiera personliga aspekter givet förutsatt frågeställning.
+
+
+
+
+
+
+
+
+<!-- __________________________________________________________________________________________________________ -->
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+# Slutsats
+
+Projektet visar att ett faltat nätverk (CNN) är mycket effektivt för att klassificera talade siffror baserat på log-mel-spektrogram. Även vid kraftigt reducerad upplösning bibehölls en hög noggrannhet, vilket indikerar att den mest avgörande informationen finns i kanalens intensitetsmönster snarare än i finare tids- eller frekvensdetaljer.
+
+Resultaten bekräftar att CNN-modeller lämpar sig särskilt väl för ljuddata av denna typ, tack vare deras förmåga att utnyttja den rumsliga strukturen i spektrogrammen. Den djupa modellen gav bäst totalprestanda men endast marginellt bättre än enklare varianter, vilket antyder att ytterligare lager inte nödvändigtvis leder till högre generaliseringsförmåga.
+
+Sammanfattningsvis visar studien att goda resultat kan uppnås även med små och beräkningmässigt lätta modeller vid klassificering av mindre ljudfiler och tydliga klasser.
+
+Framtida arbete bör fokusera på att undersöka vilka större påfrestningar ett liknande datamaterial kan hantera innan prestandan minskar då detta arbeta eventuellt hade en för robust bas modell. Detta skulle kunna göras genom att analysera ljudfiler med olika mängder brus, bullriga miljöer eller variera den tids-possition siffran är sagd i filen.
+
+Samt kan andra framtida arbeten fokusera på andra typer av klassificering från ljud-data så som kön, accent etc. 
+
+
+
+
+
+
+<!-- __________________________________________________________________________________________________________ -->
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+# Referenser
+
+\section*{Referenser}
+
+\begin{itemize}
+  \item James, G., Witten, D., Hastie, T. och Tibshirani, R. (2023). \textit{An Introduction to Statistical Learning: with Applications in R}. 2:a upplagan (Corrected printing June 2023). Springer.
+  \item Goodfellow, I., Bengio, Y. och Courville, A. (2016). \textit{Deep Learning}. MIT Press. Tillgång till figurer: \url{https://www.deeplearningbook.org/}
+  \item Srinivasan, S. (2020). \textit{AudioMNIST Dataset}. Kaggle. Hämtad från \url{https://www.kaggle.com/datasets/sripaadsrinivasan/audio-mnist}
+  \item ”Short-Time Fourier Transform.” (2024). \textit{Wikipedia, The Free Encyclopedia}. Hämtad från \url{https://en.wikipedia.org/wiki/Short-time_Fourier_transform}
+\end{itemize}
+
+
+
+<!-- <div id="BIBTeX_AudioMnist"></div> -->
+
+<!-- Anger sidbrytning -->
+\clearpage
+
+# Bilaga
+
+
+## Kod 
+
+Här ligger "raw file links" till kod använt i rapporten.
+
+
+### Pipelines
+
+#### Inläsning av data 
+- [Creat_df.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/Creat_df.R) (Github-länk)
+
+#### STFT-funktioner (halvt AI-genererade)
+- **compute_spec_for_plot()** - Tar en `.wav`-sökväg och returnerar en lista `(S_db, t, f_hz)`.  
+  [compute_spec_for_plot.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/compute_spec_for_plot.R) (Github-länk)  
+  
+- **plot_spec_db_index()** - Plottar ett spektrum från en lista `(Hz, tid, dB)`.  
+  [plot_spec_db_index.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/plot_spec_db_index.R) (Github-länk)
+
+#### TensorFlow-pipeline (helt AI-genererade)
+- **tf_preprocess_factory()** - Preprocessar ljud → mel-spektrogram (bild) + etikett.  
+  [tf_preprocess_factory.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/tf_preprocess_factory.R) (Github-länk)  
+  
+- **make_dataset()** - Bygger en `tf.data`-pipeline från `df` med hjälp av `tf_preprocess_factory()`.  
+  [make_dataset.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/make_dataset.R) (Github-länk)
+
+
+
+### Modeller
+Modellerna (`Base_Model`, `Model_Deep`, `Model_BN`, `Model_Stride`) definieras i:  
+- [Au.MNIST_Models.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/Au.MNIST_Models.R) (Github-länk)  
+
+### Träningsloopar
+- **Träningsloop – Exempel 1**  
+  (Epoker, callbacks, batch size m.m.)  
+  [Exampel_1_Train.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/Exampel_1_Train.R) (Github-länk)  
+  
+
+- **Träningsloop – Exempel 2**  
+  (Epoker, callbacks, batch size m.m.)  
+  [Exempel_2_train.R](https://raw.githubusercontent.com/JonasDanielsson97/ML_Project/refs/heads/main/Exempel_2_train.R) (Github-länk) 
+  
+### Komplett .Rmd-fil
+  
+
+
+
+## Generativ AI
+
+Generativ AI har använts som ett stödverktyg under projektets gång för att underlätta förståelsen av kursens material och de metoder som använts. AI har främst använts för att fördjupa förståelsen av neurala nätverk, TensorFlow och Keras-pipelines (även om jag inte fick full förståelse av hur Tenserflow och keras oppererar i R),
+
+
+Generativ AI Har använts i detta projekt med att skapa vissa pipline funktioner så som `compute_spec_for_plot`, `tf_preprocess_factory`, `make_dataset`
